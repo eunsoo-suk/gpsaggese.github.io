@@ -1,78 +1,121 @@
-**Description**
+# Description
 
-Kats is a powerful time series analysis toolkit developed by Facebook, designed for easy and efficient analysis of time series data. It provides a comprehensive set of features for forecasting, anomaly detection, and time series classification, enabling users to tackle various time series tasks with minimal effort.
+Kats is a time series analysis toolkit developed by Facebook Research. It solves the
+problem of using many forecasting models, anomaly and change point detectors, and
+feature extractors through one `TimeSeriesData` interface. It is worth a 60-minute
+tutorial because a student can forecast a series with several models and detect
+anomalies on the same series with a few lines of code.
 
-**Technologies Used**  
-Kats  
-- Provides a wide range of time series analysis functionalities including forecasting, anomaly detection, and change point detection.  
-- Supports multiple forecasting models like ARIMA, Prophet, Holt-Winters, and advanced ML-based models.  
-- Offers utilities for data manipulation and visualization, making it easy to analyze and interpret results.  
+## Technologies Used
 
----
+Kats
 
-**Project 1: Stock Price Forecasting**  
-**Difficulty**: 1 (Easy)  
+- Provides a wide range of time series analysis functionalities including
+  forecasting, anomaly detection, and change point detection
+- Supports multiple forecasting models like ARIMA, Prophet, Holt-Winters, and
+  advanced ML-based models
+- Offers utilities for data manipulation and visualization, making it easy to analyze
+  and interpret results
 
-**Project Objective**:  
-Develop a model to forecast future stock prices for a selected company based on historical price data.  
+# Tutorial
 
-**Dataset Suggestions**:  
-- Kaggle: [Tesla Historical Stock Price Data](https://www.kaggle.com/datasets/timoboz/tesla-stock-data-from-2010-to-2020).  
+- Implement the tutorial "Learn Kats in 60 mins", following
+  `.claude/skills/tutorial_in_60_mins.rules.md`
+  - Build it with `.claude/skills/tutorial_in_60_mins.create/SKILL.md`
+  - Follow the workflow in `tutorials/README.gp.md` and the quality principles in
+    `tutorials/tutorials_checklist.md`
+- Check the previous tutorials and projects, listed in the section
+  `Existing Tutorials and Projects` of
+  `.claude/skills/tutorial_in_60_mins.rules.md`
+  - No earlier tutorial or project uses Kats, so read the closest forecasting work
+  - Read `tutorials/Prophet/README.md`
+  - Read the `README.md` of the Fall2025 Prophet project, and reuse what is good
+    - `class_project/msml610/Fall2025/projects/Tutortask41_Fall2025_prophet_COVID_19_Case_Prediction/`
+- Create `tutorials/Kats/`, since it does not exist yet
+- Make it look like `msml610/tutorials/L03_knowledge_representation/`
+- Use the skills in `.claude/skills/notebook.*` to automate part of the work, and
+  document how you used them
+- Compare briefly with `tutorials/Prophet/` from the forecasting point of view
+- Deliverables:
+  - `kats_utils.py`
+  - `kats.API.ipynb`
+  - `kats.example.ipynb`
 
-**Tasks**:  
-- **Data Collection**: Load Tesla stock price data from Kaggle into a Pandas DataFrame.  
-- **Data Preprocessing**: Handle missing values and format timestamps.  
-- **Time Series Forecasting**:  
-  - Implement Kats’ `ARIMA` model for baseline forecasting.  
-  - Compare against `ProphetModel` to capture trends and seasonality.  
-- **Model Evaluation**: Evaluate forecasts with MAE and RMSE across both models.  
-- **Visualization**: Plot historical vs. predicted prices for both ARIMA and Prophet.  
+# Project
 
----
+## Project 1: Stock Price Forecasting
 
-**Project 2: Anomaly Detection in Energy Consumption**  
-**Difficulty**: 2 (Medium)  
+- **Difficulty**: 2 (Medium)
+- **Project Objective**: Develop a model to forecast future stock prices for a
+  selected company from historical price data, and choose between a baseline model
+  and a trend and seasonality model by forecast error
+- **Dataset Suggestions**:
+  [Tesla Historical Stock Price Data](https://www.kaggle.com/datasets/timoboz/tesla-stock-data-from-2010-to-2020)
+- **Tasks**:
+  - **Preprocess the Data**: Load the Tesla prices into a pandas DataFrame, handle
+    missing values, and convert the timestamps into a `TimeSeriesData` object
+  - **Define the Forecasting Problem**: Forecast the closing price for a fixed
+    horizon with a chronological train and test split
+  - **Forecast with Kats**: Fit `ARIMAModel` as the baseline and `ProphetModel` to
+    capture trend and seasonality, and forecast the test horizon with both
+  - **Evaluate the Forecasts**: Compare MAE and RMSE of both models on the test
+    horizon
+  - **Visualize the Forecasts**: Plot historical vs. predicted prices for both ARIMA
+    and Prophet, with their prediction intervals
+- **Bonus Ideas (Optional)**: Repeat the same analysis for multiple stocks and
+  different forecasting intervals; add trading volume as a feature and test the Kats
+  `MLARModel`
 
-**Project Objective**:  
-Identify anomalies in building energy consumption data to detect unusual usage patterns.  
+### Milestones
 
-**Dataset Suggestions**:  
-- Kaggle: [Hourly Energy Consumption Dataset](https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption).  
+- Milestone 1: Set up the container and the data
+  - Project tasks: Preprocess the Data
+  - Result: `tutorials/Kats/` container running, and the Tesla prices as a clean
+    `TimeSeriesData` object with a train and test split
+- Milestone 2: API notebook
+  - Project tasks: Forecast with Kats
+  - Result: `kats.API.ipynb` covering `TimeSeriesData`, `ARIMAModel`, `ProphetModel`,
+    and `HoltWintersModel` on a synthetic series, and one change point detector
+- Milestone 3: Example notebook
+  - Project tasks: Define the Forecasting Problem, Forecast with Kats, Evaluate the
+    Forecasts, Visualize the Forecasts
+  - Result: `kats.example.ipynb` running end to end
 
-**Tasks**:  
-- **Data Collection**: Download and load the dataset into a Pandas DataFrame.  
-- **Data Preprocessing**: Convert timestamps, handle missing values.  
-- **Anomaly Detection**:  
-  - Use Kats’ `CUSUMDetector` for detecting sudden shifts.  
-  - Apply Kats’ `BOCPDDetector` (Bayesian Online Change Point Detection) for trend-based anomalies.  
-  - Experiment with Kats’ `SeasonalHybridESD` for seasonal anomaly detection.  
-- **Visualization**: Highlight anomalies from each method on time-series plots.  
-- **Report Findings**: Compare results across detectors and discuss business implications.  
+## Project 2: Anomaly Detection in Energy Consumption
 
----
+- **Difficulty**: 2 (Medium)
+- **Project Objective**: Identify anomalies in building energy consumption data to
+  detect unusual usage patterns
+- **Dataset Suggestions**:
+  [Hourly Energy Consumption Dataset](https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption)
+- **Tasks**:
+  - **Preprocess the Data**: Download the dataset, load it into a pandas DataFrame,
+    convert the timestamps, and handle missing values
+  - **Detect Anomalies**: Use `CUSUMDetector` for sudden shifts, `BOCPDetector`
+    (Bayesian Online Change Point Detection) for trend changes, and `OutlierDetector`
+    for seasonal outliers
+  - **Visualize Anomalies**: Highlight the anomalies of each method on time-series
+    plots
+  - **Report Findings**: Compare the results across detectors and discuss business
+    implications
+- **Bonus Ideas (Optional)**: Build an ensemble anomaly detector that combines
+  results from multiple models
 
-**Project 3: Multi-Seasonal Time Series Forecasting for Retail Sales**  
-**Difficulty**: 3 (Hard)  
+## Project 3: Multi-Seasonal Time Series Forecasting for Retail Sales
 
-**Project Objective**:  
-Build a forecasting model to predict future retail sales while accounting for multiple seasonal effects like holidays and promotions.  
-
-**Dataset Suggestions**:  
-- Kaggle: [Store Sales - Time Series Forecasting Dataset](https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data).  
-
-**Tasks**:  
-- **Data Collection**: Load retail sales data from Kaggle.  
-- **Data Preprocessing**: Clean data, create holiday and promotion features, and encode categorical variables.  
-- **Multi-Seasonal Forecasting**:  
-  - Implement Kats’ `ProphetModel` with holiday regressors.  
-  - Compare against `HoltWintersModel` to capture multiple seasonal cycles.  
-  - Experiment with Kats’ `ARIMA` or `SARIMA` for strong seasonal patterns.  
-- **Model Evaluation**: Compare model performance with MAE and RMSE.  
-- **Visualization**: Plot forecasts from each model alongside historical sales data.  
-
----
-
-**Bonus Ideas (Optional):**  
-- For Project 1: Add features like trading volume or sentiment indicators and test Kats’ MLForecast model.  
-- For Project 2: Build an ensemble anomaly detector that combines results from multiple models.  
-- For Project 3: Incorporate external economic indicators (e.g., inflation, holidays, promotions) and test hybrid models.  
+- **Difficulty**: 3 (Hard)
+- **Project Objective**: Build a forecasting model to predict future retail sales
+  while accounting for multiple seasonal effects like holidays and promotions
+- **Dataset Suggestions**:
+  [Store Sales - Time Series Forecasting](https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data)
+- **Tasks**:
+  - **Preprocess the Data**: Load the retail sales data, clean it, create holiday and
+    promotion features, and encode categorical variables
+  - **Forecast Multiple Seasonalities**: Fit `ProphetModel` with holiday regressors,
+    `HoltWintersModel` for multiple seasonal cycles, and `SARIMAModel` for strong
+    seasonal patterns
+  - **Evaluate the Models**: Compare MAE and RMSE of the models
+  - **Visualize the Forecasts**: Plot the forecasts of each model alongside the
+    historical sales data
+- **Bonus Ideas (Optional)**: Incorporate external economic indicators (e.g.,
+  inflation) and test hybrid models
