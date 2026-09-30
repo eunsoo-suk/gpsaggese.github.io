@@ -11,22 +11,42 @@ import clip_utils as cliputil
 """
 
 import logging
+import math
 import os
 import re
 from collections import Counter
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+# Store the Hugging Face model cache inside the project directory, so that
+# the CLIP weights are downloaded once and survive container restarts.
+# This must run before `transformers` is imported.
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.environ.setdefault("HF_HOME", os.path.join(_PROJECT_DIR, "cache", "hf"))
+
+import numpy as np
 import pandas as pd
-from PIL import Image
+import torch
+from PIL import Image, ImageFile
 from sklearn.model_selection import train_test_split
 from tqdm.auto import tqdm
+from transformers import CLIPModel, CLIPProcessor
 
 import helpers.hnotebook as hnotebo
 
 _LOG = logging.getLogger(__name__)
 
+# A few MVSA JPEGs are missing some trailing bytes: decode them anyway instead
+# of failing, since the missing bytes barely affect the image.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 # Sentiment classes in a fixed order, used as integer class ids.
 LABELS = ["negative", "neutral", "positive"]
+
+# Pretrained CLIP checkpoint used throughout the project.
+MODEL_ID = "openai/clip-vit-large-patch14"
+
+# Maximum number of tokens the CLIP text encoder accepts.
+MAX_TEXT_TOKENS = 77
 
 
 def init_loggers(notebook_log: logging.Logger) -> None:
@@ -262,3 +282,220 @@ def summarize_splits(df: pd.DataFrame) -> pd.DataFrame:
     counts = pd.crosstab(df["split"], df["label"])[LABELS]
     counts["total"] = counts.sum(axis=1)
     return counts.loc[["train", "val", "test"]]
+
+
+# #############################################################################
+# CLIP model
+# #############################################################################
+
+
+def get_device() -> str:
+    """
+    Return `cuda` if a GPU is available, otherwise `cpu`.
+    """
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def load_clip(
+    model_id: str = MODEL_ID, *, device: Optional[str] = None
+) -> Tuple[CLIPModel, CLIPProcessor]:
+    """
+    Load the pretrained CLIP model in inference mode, with its processor.
+
+    The model is frozen: it is only used to extract features.
+    """
+    device = device or get_device()
+    model = CLIPModel.from_pretrained(model_id).to(device).eval()
+    processor = CLIPProcessor.from_pretrained(model_id)
+    _LOG.info("Loaded %s on %s", model_id, device)
+    return model, processor
+
+
+def _as_embedding(output: Any, expected_dim: int) -> torch.Tensor:
+    """
+    Extract the projected embedding from `get_*_features()`.
+
+    Depending on the `transformers` version, `get_image_features()` and
+    `get_text_features()` return either a tensor or a model output object.
+    """
+    if isinstance(output, torch.Tensor):
+        emb = output
+    else:
+        emb = None
+        for key in ("image_embeds", "text_embeds", "pooler_output"):
+            emb = getattr(output, key, None)
+            if emb is not None:
+                break
+        if emb is None:
+            emb = output[0]
+    if emb.shape[-1] != expected_dim:
+        raise ValueError(
+            f"Expected embeddings of size {expected_dim}, got {tuple(emb.shape)}"
+        )
+    return emb
+
+
+def _l2_normalize(x: torch.Tensor) -> torch.Tensor:
+    """
+    Scale each row to unit length, so that a dot product is a cosine similarity.
+    """
+    return x / x.norm(dim=-1, keepdim=True)
+
+
+# #############################################################################
+# Embedding extraction
+# #############################################################################
+
+
+@torch.inference_mode()
+def embed_images(
+    image_paths: List[str],
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    *,
+    batch_size: int = 32,
+    show_progress: bool = True,
+) -> np.ndarray:
+    """
+    Encode images into L2-normalized CLIP embeddings.
+
+    :return: array of shape `(len(image_paths), projection_dim)`
+    """
+    device = next(model.parameters()).device
+    dim = model.config.projection_dim
+    feats = []
+    for start in tqdm(
+        range(0, len(image_paths), batch_size),
+        desc="Image embeddings",
+        disable=not show_progress,
+        leave=False,
+    ):
+        images = []
+        for path in image_paths[start : start + batch_size]:
+            with Image.open(path) as img:
+                images.append(img.convert("RGB"))
+        inputs = processor(images=images, return_tensors="pt").to(device)
+        emb = _as_embedding(model.get_image_features(**inputs), dim)
+        feats.append(_l2_normalize(emb).float().cpu().numpy())
+    return np.concatenate(feats).astype(np.float32)
+
+
+@torch.inference_mode()
+def embed_texts(
+    texts: List[str],
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    *,
+    batch_size: int = 64,
+    show_progress: bool = True,
+) -> np.ndarray:
+    """
+    Encode texts into L2-normalized CLIP embeddings.
+
+    Texts longer than 77 tokens are truncated.
+
+    :return: array of shape `(len(texts), projection_dim)`
+    """
+    device = next(model.parameters()).device
+    dim = model.config.projection_dim
+    feats = []
+    for start in tqdm(
+        range(0, len(texts), batch_size),
+        desc="Text embeddings",
+        disable=not show_progress,
+        leave=False,
+    ):
+        inputs = processor(
+            text=list(texts[start : start + batch_size]),
+            padding=True,
+            truncation=True,
+            max_length=MAX_TEXT_TOKENS,
+            return_tensors="pt",
+        ).to(device)
+        emb = _as_embedding(model.get_text_features(**inputs), dim)
+        feats.append(_l2_normalize(emb).float().cpu().numpy())
+    return np.concatenate(feats).astype(np.float32)
+
+
+def count_truncated_texts(texts: List[str], processor: CLIPProcessor) -> int:
+    """
+    Count how many texts exceed the 77-token limit of the CLIP text encoder.
+    """
+    lengths = [
+        len(ids) for ids in processor.tokenizer(list(texts))["input_ids"]
+    ]
+    return int(sum(n > MAX_TEXT_TOKENS for n in lengths))
+
+
+def load_embeddings(cache_path: str) -> Dict[str, np.ndarray]:
+    """
+    Load cached embeddings with keys `ids`, `image`, `text`.
+    """
+    with np.load(cache_path) as data:
+        return {key: data[key] for key in ("ids", "image", "text")}
+
+
+def extract_embeddings(
+    df: pd.DataFrame,
+    cache_path: str,
+    *,
+    model: Optional[CLIPModel] = None,
+    processor: Optional[CLIPProcessor] = None,
+    batch_size: int = 32,
+    chunk_size: int = 1000,
+    overwrite: bool = False,
+) -> Dict[str, np.ndarray]:
+    """
+    Compute CLIP image and text embeddings for all posts, with caching.
+
+    - If `cache_path` exists and matches the post ids of `df`, load it and
+      skip the computation.
+    - Otherwise, encode the posts in chunks of `chunk_size`, saving each
+      chunk to disk. If the run is interrupted, calling the function again
+      resumes from the last saved chunk.
+
+    :param df: table from `build_mvsa_table()` with `id`, `image_path`,
+        `text` columns
+    :param cache_path: output file, e.g. `data/processed/clip_embeddings.npz`
+    :return: dict with `ids` (N,), `image` (N, 768), `text` (N, 768), rows
+        in the same order as `df`
+    """
+    ids = df["id"].to_numpy()
+    if os.path.exists(cache_path) and not overwrite:
+        cache = load_embeddings(cache_path)
+        if np.array_equal(cache["ids"], ids):
+            _LOG.info("Loaded cached embeddings from %s", cache_path)
+            return cache
+        _LOG.warning("Cache %s does not match `df`: recomputing", cache_path)
+    if model is None or processor is None:
+        model, processor = load_clip()
+    chunk_dir = os.path.splitext(cache_path)[0] + "_chunks"
+    os.makedirs(chunk_dir, exist_ok=True)
+    image_paths = df["image_path"].tolist()
+    texts = df["text"].tolist()
+    n_chunks = math.ceil(len(df) / chunk_size)
+    chunk_paths = []
+    for k in tqdm(range(n_chunks), desc="Chunks"):
+        chunk_path = os.path.join(chunk_dir, f"chunk_{k:04d}.npz")
+        chunk_paths.append(chunk_path)
+        if os.path.exists(chunk_path) and not overwrite:
+            continue
+        rows = slice(k * chunk_size, (k + 1) * chunk_size)
+        image_emb = embed_images(
+            image_paths[rows], model, processor, batch_size=batch_size
+        )
+        text_emb = embed_texts(texts[rows], model, processor)
+        np.savez(chunk_path, ids=ids[rows], image=image_emb, text=text_emb)
+    # Merge the chunks into a single cache file.
+    parts = [load_embeddings(path) for path in chunk_paths]
+    cache = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
+    if not np.array_equal(cache["ids"], ids):
+        raise ValueError(
+            f"Chunks in {chunk_dir} do not match `df`: delete the directory "
+            "and run again"
+        )
+    np.savez(cache_path, **cache)
+    _LOG.info(
+        "Saved embeddings for %d posts to %s", len(cache["ids"]), cache_path
+    )
+    return cache
