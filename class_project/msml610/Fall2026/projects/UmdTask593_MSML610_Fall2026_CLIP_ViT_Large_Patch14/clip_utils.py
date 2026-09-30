@@ -10,10 +10,12 @@ Import as:
 import clip_utils as cliputil
 """
 
+import html
 import logging
 import math
 import os
 import re
+import textwrap
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("HF_HOME", os.path.join(_PROJECT_DIR, "cache", "hf"))
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -143,10 +146,13 @@ def clean_tweet(text: str) -> str:
     """
     Normalize tweet text before feeding it to the CLIP text encoder.
 
+    - Decode HTML entities stored by Twitter (e.g., `&amp;` -> `&`,
+      `&lt;3` -> `<3`).
     - Remove URLs and the `RT` prefix.
     - Replace user mentions with `@user`.
     - Keep hashtag words but drop the `#` symbol.
     """
+    text = html.unescape(text)
     text = re.sub(r"http\S+|www\.\S+", " ", text)
     text = re.sub(r"^RT\s+", " ", text)
     text = re.sub(r"@\w+", "@user", text)
@@ -311,7 +317,7 @@ def load_clip(
     return model, processor
 
 
-def _as_embedding(output: Any, expected_dim: int) -> torch.Tensor:
+def as_embedding(output: Any, expected_dim: int) -> torch.Tensor:
     """
     Extract the projected embedding from `get_*_features()`.
 
@@ -375,7 +381,7 @@ def embed_images(
             with Image.open(path) as img:
                 images.append(img.convert("RGB"))
         inputs = processor(images=images, return_tensors="pt").to(device)
-        emb = _as_embedding(model.get_image_features(**inputs), dim)
+        emb = as_embedding(model.get_image_features(**inputs), dim)
         feats.append(_l2_normalize(emb).float().cpu().numpy())
     return np.concatenate(feats).astype(np.float32)
 
@@ -412,7 +418,7 @@ def embed_texts(
             max_length=MAX_TEXT_TOKENS,
             return_tensors="pt",
         ).to(device)
-        emb = _as_embedding(model.get_text_features(**inputs), dim)
+        emb = as_embedding(model.get_text_features(**inputs), dim)
         feats.append(_l2_normalize(emb).float().cpu().numpy())
     return np.concatenate(feats).astype(np.float32)
 
@@ -433,6 +439,34 @@ def load_embeddings(cache_path: str) -> Dict[str, np.ndarray]:
     """
     with np.load(cache_path) as data:
         return {key: data[key] for key in ("ids", "image", "text")}
+
+
+def update_text_embeddings(
+    df: pd.DataFrame,
+    cache_path: str,
+    *,
+    model: Optional[CLIPModel] = None,
+    processor: Optional[CLIPProcessor] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Recompute only the text embeddings in an existing cache.
+
+    Use this after changing the text cleaning: the image embeddings, which
+    are much slower to compute, are kept as they are.
+
+    :param df: table with the same posts, in the same order, as the cache
+    :param cache_path: existing cache from `extract_embeddings()`
+    :return: updated cache
+    """
+    cache = load_embeddings(cache_path)
+    if not np.array_equal(cache["ids"], df["id"].to_numpy()):
+        raise ValueError(f"Cache {cache_path} does not match `df`")
+    if model is None or processor is None:
+        model, processor = load_clip()
+    cache["text"] = embed_texts(df["text"].tolist(), model, processor)
+    np.savez(cache_path, **cache)
+    _LOG.info("Updated text embeddings in %s", cache_path)
+    return cache
 
 
 def extract_embeddings(
@@ -499,3 +533,127 @@ def extract_embeddings(
         "Saved embeddings for %d posts to %s", len(cache["ids"]), cache_path
     )
     return cache
+
+
+# #############################################################################
+# Tutorial helpers (`clip.API.ipynb`)
+# #############################################################################
+
+
+def sample_posts(
+    df: pd.DataFrame,
+    *,
+    n_per_label: int = 2,
+    split: str = "test",
+    seed: int = 0,
+) -> pd.DataFrame:
+    """
+    Pick `n_per_label` random posts for each sentiment label.
+    """
+    subset = df[df["split"] == split]
+    posts = subset.groupby("label").sample(n=n_per_label, random_state=seed)
+    order = posts["label"].map(LABELS.index)
+    return posts.iloc[order.argsort(kind="stable")].reset_index(drop=True)
+
+
+def load_images(image_paths: List[str]) -> List[Image.Image]:
+    """
+    Load images as RGB, the format expected by the CLIP processor.
+    """
+    images = []
+    for path in image_paths:
+        with Image.open(path) as img:
+            images.append(img.convert("RGB"))
+    return images
+
+
+def show_posts(
+    posts: pd.DataFrame, *, ncols: int = 3, max_chars: int = 90
+) -> None:
+    """
+    Show the image of each post with its label and (shortened) tweet text.
+    """
+    nrows = math.ceil(len(posts) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.8 * nrows))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, row in zip(axes, posts.itertuples()):
+        with Image.open(row.image_path) as img:
+            ax.imshow(img.convert("RGB"))
+        text = row.text
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        ax.set_title(
+            f"id {row.id} [{row.label}]\n" + textwrap.fill(text, 40), fontsize=9
+        )
+    for ax in axes:
+        ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_similarity(
+    sim: np.ndarray,
+    *,
+    row_labels: List[str],
+    col_labels: List[str],
+    title: str = "Cosine similarity (rows: images, columns: texts)",
+) -> None:
+    """
+    Plot an image-text similarity matrix as an annotated heatmap.
+    """
+    fig, ax = plt.subplots(
+        figsize=(1.3 * len(col_labels) + 2.5, 1.0 * len(row_labels) + 1.5)
+    )
+    im = ax.imshow(sim, cmap="Blues")
+    ax.grid(False)
+    for i in range(sim.shape[0]):
+        for j in range(sim.shape[1]):
+            color = "white" if sim[i, j] > sim.mean() + sim.std() else "black"
+            ax.text(
+                j, i, f"{sim[i, j]:.2f}", ha="center", va="center",
+                fontsize=9, color=color,
+            )
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=30, ha="right")
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    ax.set_xlabel("Text of post")
+    ax.set_ylabel("Image of post")
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    plt.show()
+
+
+def zero_shot_probs(
+    emb: np.ndarray,
+    class_prompts: List[str],
+    model: CLIPModel,
+    processor: CLIPProcessor,
+) -> np.ndarray:
+    """
+    Classify embeddings by their similarity to one prompt per class.
+
+    Follow CLIP: scale the cosine similarities by the learned temperature
+    `logit_scale` and apply a softmax over the classes.
+
+    :param emb: L2-normalized image or text embeddings, shape (N, 768)
+    :param class_prompts: one sentence per class, in the order of `LABELS`
+    :return: class probabilities, shape (N, len(class_prompts))
+    """
+    prompt_emb = embed_texts(class_prompts, model, processor, show_progress=False)
+    scale = model.logit_scale.exp().item()
+    logits = scale * emb @ prompt_emb.T
+    logits = logits - logits.max(axis=1, keepdims=True)
+    probs = np.exp(logits)
+    return probs / probs.sum(axis=1, keepdims=True)
+
+
+def zero_shot_table(posts: pd.DataFrame, probs: np.ndarray) -> pd.DataFrame:
+    """
+    Show zero-shot class probabilities next to the true label of each post.
+    """
+    table = pd.DataFrame(probs.round(2), columns=LABELS, index=posts["id"])
+    table["predicted"] = [LABELS[k] for k in probs.argmax(axis=1)]
+    table["true"] = posts["label"].to_numpy()
+    return table
