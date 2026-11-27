@@ -16,10 +16,10 @@ import logging
 import time
 from typing import Any, Callable, Dict, Optional
 
-import helpers.hdbg as hdbg
-import helpers.hprint as hprint
 import httpx
 
+import helpers.hdbg as hdbg
+import helpers.hprint as hprint
 import research.Noesis.gateway.gateway_providers as rnogapro
 
 _LOG = logging.getLogger(__name__)
@@ -191,20 +191,21 @@ class OpenRouterProvider:
             )
         choices = data.get("choices") or []
         message = (choices[0].get("message") or {}) if choices else {}
-        if "content" not in message:
+        content = message.get("content")
+        if not isinstance(content, str):
             return self._failure(
                 slug,
                 rnogapro.UPSTREAM_ERROR,
                 start,
                 200,
-                "no completion in response",
+                "missing or non-text completion in response",
                 latency_s=latency_s,
                 served_by=data.get("provider"),
             )
         usage = data.get("usage") or {}
         result = rnogapro.ProviderResult(
             status=rnogapro.OK,
-            text=message["content"],
+            text=content,
             served_by=data.get("provider"),
             model_served=data.get("model"),
             prompt_tokens=usage.get("prompt_tokens"),

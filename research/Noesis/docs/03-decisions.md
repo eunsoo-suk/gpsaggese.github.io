@@ -61,6 +61,18 @@
 - **Alternatives**: fresh process-local randomness (hard to replay); public seeded
   schedules (predictable); marking probes in provider requests (easy to game)
 
+### D-29. Standalone monitoring cannot mutate market state
+
+- **Decision**: run longitudinal provider/model monitoring without market orders or
+  contracts, and store its observations separately from contract evidence
+- **Why**: monitoring must run without buyer traffic, while experimental thresholds
+  and monitor failures must not affect fulfillment, verdicts, or seller reputation
+- **Boundary**: the monitor can reuse the canary bank, capability measurer, and
+  provider interface; it cannot write contracts, contract verdicts, or reputation
+- **Alternatives**: synthetic contracts for monitoring (couples research traffic to
+  market state); reuse contract evidence tables (risks accidental seller penalties)
+- **Status**: proposed in `spec.PR_S13.md`; implementation starts in `PR_S14`
+
 ## Gateway
 
 ### `D4` (OpenRouter with the provider pinned, fallbacks off)
@@ -146,6 +158,38 @@
   (`findings/openrouter_spike.md`)
 - **Alternatives**: frontier models, whose vendors (OpenAI, Anthropic, Google) won't
   bid, so the tier would be empty or collusion-prone (`04-plan.md`, Risks)
+- **Status**: proposed
+
+### `D36` (Reject a Prompt Over the Cap, Estimated From Its Characters)
+
+- **Decision**: enforce D19's prompt limit by rejecting, not truncating
+  - Estimate a prompt's tokens as `ceil(characters / 2)` plus 45 per request plus 6
+    per extra message
+  - Reject a request above `NOESIS_MAX_PROMPT_TOKENS` (default 1,000) with HTTP 400
+    `context_length_exceeded`, before any provider call
+  - Log nothing in `requests`, like the other rejections before the provider
+    (`02.1-design.gateway.md`)
+  - The 1,000 is also `PROMPT_TOKENS_PER_TASK` in `market/supply_adapter.py`, which
+    prices asks (D25) and cannot import the setting
+- **Why**:
+  - The repo has no tokenizer, and Llama 3.3's own tokenizer is a gated download
+  - Sellers bill 1.75 (numbers), 2.44 (code), and about 5.1 (prose) characters per
+    token, plus 9 to 40 framing tokens per request
+    (`notebooks/prompt_tokens.ipynb`)
+  - A ratio of 2 keeps code under the cap and number-heavy text within 13% of it,
+    so D25's worst-case ask price holds
+  - English prompts are capped near 1,900 characters
+  - Rejecting matches the default of OpenAI, which fails an over-length request
+    with a 400 instead of truncating it, and of OpenRouter for endpoints over
+    8,192 tokens of context, which includes every Llama 3.3 70B endpoint
+- **Alternatives**:
+  - A ratio of 3: code and numbers overshoot by 19% to 68%
+  - A ratio of 1.75: never overshoots, but English is capped near 1,700 characters
+  - A tokenizer dependency: `tiktoken` only approximates Llama
+  - Truncating the prompt: silently changes the buyer's request
+  - Logging the refusal as `refused_cap`: that status is reserved for the monthly
+    spend cap (PRD G8), and the gateway logs nothing before the provider
+    (`02.1-design.gateway.md`)
 - **Status**: proposed
 
 ## Implementation
@@ -398,3 +442,69 @@
 - **Alternatives**: a grant per tier or per account type (nothing in the PRD
   asks for it); store the account id on the contract (changes the `Contract`
   schema that PR_P2b persists).
+
+## Offline Checker Replay (PR_S6)
+
+### `D32` (Exercise the Production Checker, Not an Experiment-only Copy)
+
+- **Decision**: synthetic observations pass through `build_evidence()`,
+  `assess_window_readiness()`, and `decide_verdict()`, the same pure functions used
+  by the runtime. Replay code owns only input generation, orchestration, analytic
+  prediction, and reporting.
+- **Why**: agreement from a second checker implementation would not establish that
+  the deployed decision path is correct. Pure production boundaries let the
+  experiment test real logic without requiring a database, gateway, or provider.
+- **Alternatives**: implement a simplified replay-specific verdict function
+  (smaller but capable of agreeing with itself); run the entire service stack
+  (adds unrelated I/O failures to a checker-logic experiment).
+
+### `D33` (Make Replay Deterministic and Keep Metric Streams Independent)
+
+- **Decision**: derive versioned latency and quality seeds from SHA-256 over the
+  base seed, scenario, and metric. Generate latency and quality with separate
+  `random.Random` instances.
+- **Why**: Python's `hash()` is process-randomized, and one shared stream would let
+  an added latency draw silently change every later canary outcome. Stable,
+  independent streams make failures reproducible and separately attributable.
+- **Alternatives**: process-global randomness (order-dependent); one seeded stream
+  (reproducible but couples the two measures); checked-in observation fixtures
+  (large and less useful for varying the protocol).
+
+### `D34` (Compare Monte Carlo Outcomes With an Exact Analytic Oracle)
+
+- **Decision**: enumerate binomial success counts, apply the production confidence
+  rule to each count, and sum the exact probability of all failing outcomes. A
+  scenario passes only within four standard errors, with a 0.5 percentage-point
+  floor, and within the roadmap's five-percentage-point limit.
+- **Why**: fixed expected snapshots can preserve an incorrect implementation.
+  Exact probabilities provide an independent prediction, while the statistical
+  tolerance accounts for finite simulation and the roadmap limit remains easy to
+  communicate.
+- **Alternatives**: compare only with hard-coded counts (brittle); use only the
+  five-point limit (too loose for 5,000 samples); require exact equality
+  (incorrect for stochastic simulation).
+
+### `D35` (Publish Reviewable, Reproducible Findings Without Live-I/O Claims)
+
+- **Decision**: the executable experiment writes stable Markdown, CSV, and JSON,
+  returns a nonzero exit code on acceptance failure, and checks in the full default
+  run. Reports explicitly separate latency, quality, and insufficient-evidence
+  outcomes.
+- **Why**: reviewers need a concise result, researchers need flat data, and CI
+  needs structured output and an exit status. Checked-in artifacts preserve the
+  exact evidence behind the technical-report claim.
+- **Alternatives**: console output only (not durable); notebooks (harder to test and
+  automate); interpret synthetic replay as live nerfing evidence (unsupported).
+
+## M12 Report Tables
+
+- Use explicit nullable column types and stable order for notebook-friendly tables
+- Keep buyer limits separate from seller expectations; missing opposite-side terms
+  are null rather than zero. Normalize capability field names to `tier`.
+- Table helpers perform no I/O; scripts own rendering and exported artifacts
+- Summary totals are reconstructed from M10's matched and residual quantities;
+  tests independently compare them with the original submitted books
+- Plot helpers use original orders, stable price priority, cumulative tasks, and
+  post steps. They return standalone figures without changing global backends;
+  headless test commands select `MPLBACKEND=Agg`.
+>
