@@ -5,19 +5,40 @@ import test.test_clip_utils as ttcliut
 """
 
 import logging
+import pprint
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
+import helpers.hdbg as hdbg
 import helpers.hunit_test as hunitest
 
 import clip_utils as cliputil
 
 _LOG = logging.getLogger(__name__)
 
-# Using tiny sizes to make the tests run fast.
-_BATCH = 4
+
+# #############################################################################
+# Helpers
+# #############################################################################
+
+
+# Use tiny sizes so the tests run fast.
+_DIM = 16
+_N_POSTS = 10
+_N_TRAIN = 8
 _N_CLASSES = 3
+# Number of digits used when comparing floats.
+_N_DIGITS = 4
+
+
+def _set_seed() -> None:
+    """
+    Set seeds so every run gives the same numbers.
+    """
+    torch.manual_seed(0)
+    np.random.seed(0)
 
 
 # #############################################################################
@@ -30,32 +51,50 @@ class Test_majority_vote(hunitest.TestCase):
     Test `clip_utils._majority_vote()`.
     """
 
-    def test_two_agree(self) -> None:
+    def helper(self, votes: List[str], expected: Optional[str]) -> None:
+        """
+        Run `_majority_vote()` and compare with the expected label.
+
+        :param votes: labels from the 3 annotators
+        :param expected: expected majority label, or `None`
+        """
+        # Run test.
+        actual = cliputil._majority_vote(votes)
+        # Check outputs.
+        self.assert_equal(str(actual), str(expected))
+
+    def test1(self) -> None:
         """
         2 of 3 annotators agree, so their label wins.
         """
-        # Preparing the inputs.
+        # Prepare inputs.
         votes = ["positive", "neutral", "positive"]
-        # Running test.
-        actual = cliputil._majority_vote(votes)
-        # Checking outputs.
-        self.assertEqual(actual, "positive")
+        # Prepare outputs.
+        expected = "positive"
+        # Run test.
+        self.helper(votes, expected)
 
-    def test_no_majority(self) -> None:
+    def test2(self) -> None:
         """
         All 3 annotators disagree, so there is no label.
         """
-        # Preparing inputs.
-
+        # Prepare inputs.
         votes = ["positive", "neutral", "negative"]
+        # Prepare outputs.
+        expected = None
+        # Run test.
+        self.helper(votes, expected)
 
-        # Running test.
-
-        actual = cliputil._majority_vote(votes)
-
-        # Checking outputs.
-
-        self.assertIsNone(actual)
+    def test3(self) -> None:
+        """
+        All 3 annotators agree, so their label is returned.
+        """
+        # Prepare inputs.
+        votes = ["negative", "negative", "negative"]
+        # Prepare outputs.
+        expected = "negative"
+        # Run test.
+        self.helper(votes, expected)
 
 
 # #############################################################################
@@ -68,171 +107,402 @@ class Test_combine_text_image(hunitest.TestCase):
     Test `clip_utils._combine_text_image()`.
     """
 
-    def test_same_label(self) -> None:
+    def helper(
+        self,
+        text_label: Optional[str],
+        image_label: Optional[str],
+        expected: Optional[str],
+    ) -> None:
+        """
+        Run `_combine_text_image()` and compare with the expected label.
+
+        :param text_label: majority label of the text
+        :param image_label: majority label of the image
+        :param expected: expected post label, or `None` if dropped
+        """
+        # Run test.
+        actual = cliputil._combine_text_image(text_label, image_label)
+        # Check outputs.
+        self.assert_equal(str(actual), str(expected))
+
+    def test1(self) -> None:
         """
         Same label on text and image is kept.
         """
-        actual = cliputil._combine_text_image("negative", "negative")
-        self.assertEqual(actual, "negative")
+        # Prepare inputs.
+        text_label = "negative"
+        image_label = "negative"
+        # Prepare outputs.
+        expected = "negative"
+        # Run test.
+        self.helper(text_label, image_label, expected)
 
-    def test_neutral_text(self) -> None:
+    def test2(self) -> None:
         """
         Neutral text takes the image label.
         """
-        actual = cliputil._combine_text_image("neutral", "positive")
-        self.assertEqual(actual, "positive")
+        # Prepare inputs.
+        text_label = "neutral"
+        image_label = "positive"
+        # Prepare outputs.
+        expected = "positive"
+        # Run test.
+        self.helper(text_label, image_label, expected)
 
-    def test_neutral_image(self) -> None:
+    def test3(self) -> None:
         """
         Neutral image takes the text label.
         """
-        actual = cliputil._combine_text_image("negative", "neutral")
-        self.assertEqual(actual, "negative")
+        # Prepare inputs.
+        text_label = "negative"
+        image_label = "neutral"
+        # Prepare outputs.
+        expected = "negative"
+        # Run test.
+        self.helper(text_label, image_label, expected)
 
-    def test_conflict_dropped(self) -> None:
+    def test4(self) -> None:
         """
         Positive vs negative is a conflict, so the post is dropped.
         """
-        actual = cliputil._combine_text_image("positive", "negative")
-        self.assertIsNone(actual)
+        # Prepare inputs.
+        text_label = "positive"
+        image_label = "negative"
+        # Prepare outputs.
+        expected = None
+        # Run test.
+        self.helper(text_label, image_label, expected)
 
-    def test_missing_side_dropped(self) -> None:
+    def test5(self) -> None:
         """
-        If one side has no label, the post is dropped.
+        If the text has no label, the post is dropped.
         """
-        self.assertIsNone(cliputil._combine_text_image(None, "positive"))
-        self.assertIsNone(cliputil._combine_text_image("positive", None))
+        # Prepare inputs.
+        text_label = None
+        image_label = "positive"
+        # Prepare outputs.
+        expected = None
+        # Run test.
+        self.helper(text_label, image_label, expected)
+
+    def test6(self) -> None:
+        """
+        If the image has no label, the post is dropped.
+        """
+        # Prepare inputs.
+        text_label = "positive"
+        image_label = None
+        # Prepare outputs.
+        expected = None
+        # Run test.
+        self.helper(text_label, image_label, expected)
 
 
 # #############################################################################
-# Test_head_output_shapes
+# Test_make_linear_head
 # #############################################################################
 
 
-class Test_head_output_shapes(hunitest.TestCase):
+class Test_make_linear_head(hunitest.TestCase):
     """
-    Each head must output 3 scores per post: shape (batch, 3).
+    Test `clip_utils.make_linear_head()`.
     """
 
-    @staticmethod
-    def _set_seed() -> None:
+    def helper(self, batch: int, expected: Tuple[int, int]) -> None:
         """
-        Set seeds so every run gives the same numbers.
-        """
-        torch.manual_seed(0)
-        np.random.seed(0)
+        Build the head on fake features and check the output shape.
 
-    def test_linear_head(self) -> None:
+        :param batch: number of posts to score
+        :param expected: expected output shape
         """
-        Linear baseline from `make_linear_head()`.
-        """
-        # Preparing inputs.
-
-        self._set_seed()
-        dim = 16
-        n_posts, n_train = 10, 8
-        X = np.random.randn(n_posts, dim).astype(np.float32)
-        train_idx = np.arange(n_train)
+        # Prepare inputs.
+        _set_seed()
+        X = np.random.randn(_N_POSTS, _DIM).astype(np.float32)
+        train_idx = np.arange(_N_TRAIN)
+        x = torch.randn(batch, _DIM)
+        # Run test.
         head = cliputil.make_linear_head(X, train_idx).eval()
-        x = torch.randn(_BATCH, dim)
-
-        # Running test.
-
         logits = head(x)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
 
-        # Checking outputs.
-
-        self.assertEqual(tuple(logits.shape), (_BATCH, _N_CLASSES))
-
-    def test_stack_head(self) -> None:
+    def test1(self) -> None:
         """
-        H1 stack head from `make_stack_head()`.
+        A batch of 4 posts gives 3 scores per post.
         """
-        # Preparing inputs.
+        # Prepare inputs.
+        batch = 4
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        self.helper(batch, expected)
 
-        self._set_seed()
-        dim = 16
-        n_posts, n_train = 10, 8
+    def test2(self) -> None:
+        """
+        A single post still gives 3 scores.
+        """
+        # Prepare inputs.
+        batch = 1
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        self.helper(batch, expected)
+
+
+# #############################################################################
+# Test_make_stack_head
+# #############################################################################
+
+
+class Test_make_stack_head(hunitest.TestCase):
+    """
+    Test `clip_utils.make_stack_head()`.
+    """
+
+    def helper(self, batch: int, expected: Tuple[int, int]) -> None:
+        """
+        Build the H1 head on fake embeddings and check the output shape.
+
+        :param batch: number of posts to score
+        :param expected: expected output shape
+        """
+        # Prepare inputs.
+        _set_seed()
         emb = {
-            "image": np.random.randn(n_posts, dim).astype(np.float32),
-            "text": np.random.randn(n_posts, dim).astype(np.float32),
+            "image": np.random.randn(_N_POSTS, _DIM).astype(np.float32),
+            "text": np.random.randn(_N_POSTS, _DIM).astype(np.float32),
         }
-        train_idx = np.arange(n_train)
+        train_idx = np.arange(_N_TRAIN)
+        txt = torch.randn(batch, _DIM)
+        img = torch.randn(batch, _DIM)
+        # Run test.
         head = cliputil.make_stack_head(emb, train_idx).eval()
-        txt = torch.randn(_BATCH, dim)
-        img = torch.randn(_BATCH, dim)
-
-        # Running test.
         logits = head(txt, img)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
 
-        # Checking the outputs.
-        self.assertEqual(tuple(logits.shape), (_BATCH, _N_CLASSES))
-
-    def test_gated_fusion_head(self) -> None:
+    def test1(self) -> None:
         """
-        H2 gated head: output shape, and the gate stays in [0.05, 0.95].
+        A batch of 4 posts gives 3 scores per post.
         """
-        # Preparing the inputs.
+        # Prepare inputs.
+        batch = 4
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        self.helper(batch, expected)
 
-        self._set_seed()
-        dim = 16
+    def test2(self) -> None:
+        """
+        A single post still gives 3 scores.
+        """
+        # Prepare inputs.
+        batch = 1
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        self.helper(batch, expected)
+
+
+# #############################################################################
+# TestGatedFusionHead
+# #############################################################################
+
+
+class TestGatedFusionHead(hunitest.TestCase):
+    """
+    Test `clip_utils.GatedFusionHead`.
+    """
+
+    def helper(
+        self, batch: int, anchor: str, gate_std: float
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Run the H2 head on fake normalized embeddings.
+
+        :param batch: number of posts to score
+        :param anchor: main modality of the head, "text" or "image"
+        :param gate_std: std of the gate weights; 0.0 keeps the zero init
+        :return: the logits and the gate values
+        """
+        # Prepare inputs.
+        _set_seed()
+        hidden = 8
+        ffn_dim = 16
+        cls_dim = 8
+        norm_dim = -1
         head = cliputil.GatedFusionHead(
-            in_dim=dim, hidden=8, ffn_dim=16, cls_dim=8
+            anchor=anchor,
+            in_dim=_DIM,
+            hidden=hidden,
+            ffn_dim=ffn_dim,
+            cls_dim=cls_dim,
         ).eval()
-
-        # The gate starts at 0.5, so using the big random weights to push it to
-        # the limits.
-
-        torch.nn.init.normal_(head.gate.weight, std=10.0)
-        torch.nn.init.normal_(head.gate.bias, std=10.0)
-
-        # CLIP embeddings are normalized, so normalizing the fake ones too.
-
-        txt = torch.nn.functional.normalize(torch.randn(_BATCH, dim), dim=-1)
-        img = torch.nn.functional.normalize(torch.randn(_BATCH, dim), dim=-1)
-
-        # Running test.
+        # The gate starts at 0.5, so use big random weights to push it to
+        # the limits. A std of 0.0 gives back the zero init.
+        torch.nn.init.normal_(head.gate.weight, std=gate_std)
+        torch.nn.init.normal_(head.gate.bias, std=gate_std)
+        # CLIP embeddings are normalized, so normalize the fake ones too.
+        txt = torch.nn.functional.normalize(
+            torch.randn(batch, _DIM), dim=norm_dim
+        )
+        img = torch.nn.functional.normalize(
+            torch.randn(batch, _DIM), dim=norm_dim
+        )
+        # Run test.
         logits = head(txt, img)
-
-        # Checking the outputs.
-        self.assertEqual(tuple(logits.shape), (_BATCH, _N_CLASSES))
+        # The head stores the gate after each forward pass.
         gate = head.last_gate
-        self.assertEqual(tuple(gate.shape), (_BATCH, 1))
+        hdbg.dassert_is_not(gate, None)
+        return logits, gate
 
+    def test1(self) -> None:
+        """
+        A batch of 4 posts gives 3 scores per post.
+        """
+        # Prepare inputs.
+        batch = 4
+        anchor = "text"
+        gate_std = 0.0
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        logits, _ = self.helper(batch, anchor, gate_std)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
+
+    def test2(self) -> None:
+        """
+        The zero-initialized gate starts at (0.05 + 0.95) / 2 = 0.5.
+        """
+        # Prepare inputs.
+        batch = 4
+        anchor = "text"
+        gate_std = 0.0
+        # Prepare outputs.
+        expected = [0.5] * batch
+        # Run test.
+        _, gate = self.helper(batch, anchor, gate_std)
+        # Check outputs.
+        actual = [round(g, _N_DIGITS) for g in gate.squeeze(1).tolist()]
+        self.assert_equal(str(actual), str(expected))
+
+    def test3(self) -> None:
+        """
+        With big random gate weights, the gate still stays in [0.05, 0.95].
+        """
+        # Prepare inputs.
+        batch = 4
+        anchor = "text"
+        gate_std = 10.0
         # Small tolerance for float rounding.
+        tol = 1e-6
+        gate_min = 0.05 - tol
+        gate_max = 0.95 + tol
+        # Prepare outputs.
+        expected = True
+        # Run test.
+        _, gate = self.helper(batch, anchor, gate_std)
+        # Check outputs.
+        actual = bool(((gate >= gate_min) & (gate <= gate_max)).all())
+        self.assert_equal(str(actual), str(expected))
 
-        self.assertGreaterEqual(gate.min().item(), 0.05 - 1e-6)
-        self.assertLessEqual(gate.max().item(), 0.95 + 1e-6)
-
-    def test_cross_attention_head(self) -> None:
+    def test4(self) -> None:
         """
-        H3 cross-attention head with tweets of different lengths.
+        With the image as the anchor, the head still gives 3 scores per post.
         """
+        # Prepare inputs.
+        batch = 4
+        anchor = "image"
+        gate_std = 0.0
+        # Prepare outputs.
+        expected = (batch, _N_CLASSES)
+        # Run test.
+        logits, _ = self.helper(batch, anchor, gate_std)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
 
-        # Preparing inputs.
 
-        self._set_seed()
+# #############################################################################
+# TestTokenCrossAttentionHead
+# #############################################################################
+
+
+class TestTokenCrossAttentionHead(hunitest.TestCase):
+    """
+    Test `clip_utils.TokenCrossAttentionHead`.
+    """
+
+    def helper(self, lengths: List[int]) -> torch.Tensor:
+        """
+        Run the H3 head on fake tokens, padding the text to the longest tweet.
+
+        :param lengths: number of real text tokens for each post
+        :return: the logits
+        """
+        # Prepare inputs.
+        _set_seed()
         img_dim, txt_dim = 32, 24
-        n_img_tok, n_txt_tok = 5, 7
+        n_img_tok = 5
+        n_txt_tok = max(lengths)
+        batch = len(lengths)
+        d = 16
+        heads = 2
+        ffn_dim = 32
         head = cliputil.TokenCrossAttentionHead(
-            img_dim=img_dim, txt_dim=txt_dim, d=16, heads=2, ffn_dim=32
+            img_dim=img_dim, txt_dim=txt_dim, d=d, heads=heads, ffn_dim=ffn_dim
         ).eval()
-        img_tok = torch.randn(_BATCH, n_img_tok, img_dim)
-        txt_tok = torch.randn(_BATCH, n_txt_tok, txt_dim)
-
-        # Different tweet lengths: 7, 5, 3 and 1 real tokens.
-
-        lengths = torch.tensor([7, 5, 3, 1])
-        txt_mask = (torch.arange(n_txt_tok)[None, :] < lengths[:, None]).long()
-
-        # Running test.
-
+        # Random image patches and text tokens for each post.
+        img_tok = torch.randn(batch, n_img_tok, img_dim)
+        txt_tok = torch.randn(batch, n_txt_tok, txt_dim)
+        # Tweets have different lengths: pad the text to the longest tweet and
+        # mark the real tokens with 1 and the padding with 0.
+        lengths_t = torch.tensor(lengths)
+        positions = torch.arange(n_txt_tok)
+        txt_mask = (positions[None, :] < lengths_t[:, None]).long()
+        # Run test.
         logits = head(img_tok, txt_tok, txt_mask)
+        return logits
 
-        # Checking outputs.
+    def test1(self) -> None:
+        """
+        Tweets of different lengths give 3 scores per post.
+        """
+        # Prepare inputs.
+        lengths = [7, 5, 3, 1]
+        # Prepare outputs.
+        expected = (len(lengths), _N_CLASSES)
+        # Run test.
+        logits = self.helper(lengths)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
 
-        self.assertEqual(tuple(logits.shape), (_BATCH, _N_CLASSES))
-        self.assertTrue(torch.isfinite(logits).all().item())
+    def test2(self) -> None:
+        """
+        A tweet with only 1 real token does not produce NaN or inf scores.
+        """
+        # Prepare inputs.
+        lengths = [7, 1]
+        # Prepare outputs.
+        expected = True
+        # Run test.
+        logits = self.helper(lengths)
+        # Check outputs.
+        actual = bool(torch.isfinite(logits).all())
+        self.assert_equal(str(actual), str(expected))
+
+    def test3(self) -> None:
+        """
+        A single post gives 3 scores.
+        """
+        # Prepare inputs.
+        lengths = [4]
+        # Prepare outputs.
+        expected = (len(lengths), _N_CLASSES)
+        # Run test.
+        logits = self.helper(lengths)
+        # Check outputs.
+        self.assert_equal(str(tuple(logits.shape)), str(expected))
 
 
 # #############################################################################
@@ -245,19 +515,68 @@ class Test_evaluate(hunitest.TestCase):
     Test `clip_utils.evaluate()`.
     """
 
-    def test_perfect_predictions(self) -> None:
+    def helper(
+        self, y_true: np.ndarray, y_pred: np.ndarray, expected: str
+    ) -> None:
         """
-        Perfect predictions give accuracy and macro F1 of 1.0.
+        Run `evaluate()` and compare all the metrics at once.
+
+        :param y_true: true class ids
+        :param y_pred: predicted class ids
+        :param expected: expected metrics, formatted with `pprint`
         """
-
-        # Preparing inputs.
-
-        y_true = np.array([0, 1, 2, 2, 1, 0])
-        y_pred = y_true.copy()
         # Run test.
         metrics = cliputil.evaluate(y_true, y_pred)
+        # Round so the comparison does not depend on float noise.
+        rounded: Dict[str, float] = {
+            k: round(float(v), _N_DIGITS) for k, v in metrics.items()
+        }
+        actual = pprint.pformat(rounded)
+        # Check outputs.
+        self.assert_equal(actual, expected, dedent=True)
 
-        # Checking outputs.
+    def test1(self) -> None:
+        """
+        Perfect predictions give 1.0 for every metric.
+        """
+        # Prepare inputs.
+        y_true = np.array([0, 1, 2, 2, 1, 0])
+        y_pred = y_true.copy()
+        # Prepare outputs.
+        expected = """
+        {'accuracy': 1.0,
+         'macro_f1': 1.0,
+         'precision_negative': 1.0,
+         'precision_neutral': 1.0,
+         'precision_positive': 1.0,
+         'recall_negative': 1.0,
+         'recall_neutral': 1.0,
+         'recall_positive': 1.0}
+        """
+        # Run test.
+        self.helper(y_true, y_pred, expected)
 
-        self.assertAlmostEqual(metrics["macro_f1"], 1.0)
-        self.assertAlmostEqual(metrics["accuracy"], 1.0)
+    def test2(self) -> None:
+        """
+        Always predicting the majority class gives high accuracy but low macro
+        F1.
+        """
+        # Prepare inputs.
+        # 4 of 6 posts are positive (class 2), and we always predict positive.
+        positive_class = 2
+        y_true = np.array([0, 1, 2, 2, 2, 2])
+        y_pred = np.full_like(y_true, positive_class)
+        # Prepare outputs.
+        # Positive F1 is 0.8, the other classes get 0, so macro F1 = 0.8 / 3.
+        expected = """
+        {'accuracy': 0.6667,
+         'macro_f1': 0.2667,
+         'precision_negative': 0.0,
+         'precision_neutral': 0.0,
+         'precision_positive': 0.6667,
+         'recall_negative': 0.0,
+         'recall_neutral': 0.0,
+         'recall_positive': 1.0}
+        """
+        # Run test.
+        self.helper(y_true, y_pred, expected)
